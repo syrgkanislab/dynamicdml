@@ -14,7 +14,7 @@ from sklearn.utils import check_array
 from sklearn.preprocessing import PolynomialFeatures, StandardScaler
 from sklearn.pipeline import Pipeline
 from econml.inference import NormalInferenceResults
-from econml.tests.dgp import DynamicPanelDGP
+from dgp import DynamicPanelDGP
 from copy import deepcopy
 
 def get_linear_model_reg(X, y):
