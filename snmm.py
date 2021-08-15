@@ -52,10 +52,10 @@ def get_model_reg(X, y, *, degrees=[1, 2], verbose=0):
                                                                    interaction_only=True)),
                                         ('sc', StandardScaler()),
                                         ('ls', Lasso())]),
-                              RandomForestRegressor(n_estimators=100, min_samples_leaf=10, max_depth=5),
+                              RandomForestRegressor(n_estimators=100, min_samples_leaf=10, max_depth=3),
                               lgb.LGBMRegressor(num_leaves=32)],
                              param_grid_list=[{'poly__degree': degrees, 'ls__alpha': np.logspace(-4, 2, 20)},
-                                              {'min_weight_fraction_leaf': [.001, .01, .1]},
+                                              {'min_weight_fraction_leaf': [.01, .1]},
                                               {'learning_rate': [0.1, 0.3], 'max_depth': [3, 5]}],
                              cv=3,
                              scoring='r2',
@@ -69,7 +69,7 @@ def get_multimodel_reg(X, y, *, degrees=[1, 2], verbose=0):
                                         ('ls', MultiTaskLasso())]),
                               RandomForestRegressor(n_estimators=100, min_samples_leaf=10, max_depth=5)],
                              param_grid_list=[{'poly__degree': degrees, 'ls__alpha': np.logspace(-4, 2, 20)},
-                                              {'min_weight_fraction_leaf': [.001, .01, .1]}],
+                                              {'min_weight_fraction_leaf': [.01, .1]}],
                              cv=3,
                              scoring='r2',
                              verbose=verbose)
@@ -461,7 +461,8 @@ class SNMMDynamicDML:
         self.est_base_ = SNMMDynamicDML(m=self.m, phi=self.phi, phi_names_fn=self.phi_names_fn,
                                         model_reg_fn=self.model_reg_fn,
                                         multimodel_reg_fn=self.multimodel_reg_fn, multitask=self.multitask,
-                                        model_final_fn=self.model_final_fn)
+                                        model_final_fn=self.model_final_fn,
+                                        verbose=self.verbose)
         self.est_base_.fit(self.X_, self.T_, self.y_, pi_base)
         return self
 
@@ -483,7 +484,8 @@ class SNMMDynamicDML:
         self.opt_y_ = deepcopy(y)
         _, psi_opt, res_opt, _, Qres_opt = fit_opt(y, X, T, self.m, self.phi,
                                            self.model_reg_fn, self.multimodel_reg_fn, multitask=self.multitask,
-                                           get_model_final=self.model_final_fn)
+                                           get_model_final=self.model_final_fn,
+                                           verbose=self.verbose)
         cov_opt, _, invJ_opt, stderr_dict_opt = fit_cov(Qres_opt, psi_opt, res_opt, self.m)
         self.psi_opt_, self.res_opt_, self.Qres_opt_ = psi_opt, res_opt, Qres_opt
         self.cov_opt_, self.invJ_opt_, self.stderr_opt_ = cov_opt, invJ_opt, stderr_dict_opt
