@@ -118,7 +118,7 @@ def experiment(*, n_periods, n_units, n_treatments,
         return np.array(phi_names(t))[sig[t]]
 
     est_sub = SNMMDynamicDML(m=m, phi=phi_sub, phi_names_fn=phi_names_sub,
-                         model_reg_fn=model_reg_fn, #lambda X, y: get_model_reg(X, y, degrees=[1], verbose=verbose-2),
+                         model_reg_fn=lambda X, y: get_model_reg(X, y, degrees=[1], verbose=verbose-2),
                          model_final_fn=lambda: LinearRegression(),
                          verbose=verbose)
     est_sub.fit(X, T, y, pi)
@@ -138,7 +138,7 @@ def experiment(*, n_periods, n_units, n_treatments,
         return np.array(phi_names(t))[oracle_sig[t]]
 
     est_low = SNMMDynamicDML(m=m, phi=phi_oracle, phi_names_fn=phi_names_oracle,
-                         model_reg_fn=model_reg_fn, #lambda X, y: get_model_reg(X, y, degrees=[1], verbose=verbose-2),
+                         model_reg_fn=lambda X, y: get_model_reg(X, y, degrees=[1], verbose=verbose-2),
                          model_final_fn=lambda: LinearRegression(),
                          verbose=verbose)
     est_low.fit(X, T, y, pi)
