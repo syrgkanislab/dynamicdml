@@ -52,7 +52,7 @@ def get_model_reg(X, y, *, degrees=[1, 2], verbose=0):
                                                                    interaction_only=True)),
                                         ('sc', StandardScaler()),
                                         ('ls', Lasso())]),
-                              RandomForestRegressor(n_estimators=100, min_samples_leaf=10, max_depth=3),
+                              RandomForestRegressor(n_estimators=100, min_samples_leaf=20, max_depth=3),
                               lgb.LGBMRegressor(num_leaves=32)],
                              param_grid_list=[{'poly__degree': degrees, 'ls__alpha': np.logspace(-4, 2, 20)},
                                               {'min_weight_fraction_leaf': [.01, .1]},

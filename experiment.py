@@ -9,12 +9,13 @@ from sklearn.linear_model import Lasso, LassoCV, LinearRegression
 import pandas as pd
 from joblib import Parallel, delayed
 import joblib
+from collections import OrderedDict
 
 
 def experiment(*, n_periods, n_units, n_treatments,
                 n_x, s_x, s_t,
                 hetero_strenth=.5, n_hetero_vars=0, autoreg=1.0,
-                instance_seed=None, sample_seed=None):
+                instance_seed=None, sample_seed=None, verbose=0):
     m = n_periods
     y, X, T, true_effect_params = gen_data(n_periods=m, n_units=n_units,
                                             n_treatments=n_treatments,
@@ -26,6 +27,10 @@ def experiment(*, n_periods, n_units, n_treatments,
                                             sample_seed=sample_seed)
     if n_hetero_vars == 0:
         X['het'] = X[0]
+
+    #######################
+    # High dim blip
+    #######################
 
     het_cols11 = list(X[1].columns)
     het_cols10 = list(X[0].columns)
@@ -63,12 +68,27 @@ def experiment(*, n_periods, n_units, n_treatments,
         return np.ones(T[t].shape)
 
     true_params = {}
+    true_params_sel = {}
+    true_policy = 0
+    true_policy_delta = 0
+    true_opt_policy = 0
+    true_opt_policy_delta = 0
     for t in range(m):
-        true_params[t] = {name: 0 for name in phi_names(t)}
+        true_params[t] = OrderedDict()
+        for name in phi_names(t):
+            true_params[t][name] = 0
         for i in range(T[t].shape[1]):
             true_params[t][f't{t+1}[{i}]'] = true_effect_params[t][i][0]
             for j in range(n_hetero_vars):
                 true_params[t][f't{t+1}[{i}]*x1[x{j}]'] = true_effect_params[t][i][1 + j]
+        true_params_sel[t] = np.array([v for _, v in true_params[t].items()])
+        true1 = np.mean(np.sum(true_params_sel[t] * phi(t, X, T, np.ones(T[t].shape)), axis=1))
+        true0 = np.mean(np.sum(true_params_sel[t] * phi(t, X, T, np.zeros(T[t].shape)), axis=1))
+        delta = true1 - true0
+        true_policy += true1
+        true_policy_delta += delta
+        true_opt_policy += true1 * (delta >= 0) + true0 * (delta < 0)
+        true_opt_policy_delta += delta * (delta >= 0)
 
     # model_reg_fn = lambda X, y: get_model_reg(X, y, degrees=[1])
     # multimodel_reg_fn = lambda X, y: get_multimodel_reg(X, y, degrees=[1])
@@ -80,9 +100,12 @@ def experiment(*, n_periods, n_units, n_treatments,
     est = SNMMDynamicDML(m=m, phi=phi, phi_names_fn=phi_names,
                         model_reg_fn=model_reg_fn,
                         model_final_fn=lambda: LassoCV(),
-                        verbose=0)
+                        verbose=verbose)
     est.fit(X, T, y, pi)
 
+    ##################################
+    # Post selection low dim blip
+    ##################################
     sig = {}
     for t in range(m):
         sig[t] = np.abs(est.psi_[t]) > 0.01
@@ -95,14 +118,38 @@ def experiment(*, n_periods, n_units, n_treatments,
         return np.array(phi_names(t))[sig[t]]
 
     est_sub = SNMMDynamicDML(m=m, phi=phi_sub, phi_names_fn=phi_names_sub,
-                         model_reg_fn=lambda X, y: get_model_reg(X, y, degrees=[1]),
+                         model_reg_fn=model_reg_fn, #lambda X, y: get_model_reg(X, y, degrees=[1], verbose=verbose-2),
                          model_final_fn=lambda: LinearRegression(),
-                         verbose=0)
+                         verbose=verbose)
     est_sub.fit(X, T, y, pi)
     est_sub.fit_opt(X, T, y)
 
+    ##################################
+    # Oracle low dim blip
+    ##################################
+    oracle_sig = {}
+    for t in range(m):
+        oracle_sig[t] = np.abs(true_params_sel[t]) > 0.0
+
+    def phi_oracle(t, X, T, Tt):
+        return phi(t, X, T, Tt)[:, oracle_sig[t]]
+
+    def phi_names_oracle(t):
+        return np.array(phi_names(t))[oracle_sig[t]]
+
+    est_low = SNMMDynamicDML(m=m, phi=phi_oracle, phi_names_fn=phi_names_oracle,
+                         model_reg_fn=model_reg_fn, #lambda X, y: get_model_reg(X, y, degrees=[1], verbose=verbose-2),
+                         model_final_fn=lambda: LinearRegression(),
+                         verbose=verbose)
+    est_low.fit(X, T, y, pi)
+    est_low.fit_opt(X, T, y)
+
     results = {}
-    results['true'] = true_params
+    results['true'] = {'params': true_params,
+                       'pival': true_policy,
+                       'pidelta': true_policy_delta,
+                       'optval': true_opt_policy,
+                       'optdelta': true_opt_policy_delta}
     results['reg'] = {'pival': est.policy_value_,
                       'pidelta': est.policy_delta_simple_,
                       'params': {t: est.param_summary(t).summary_frame() for t in range(m)}}
@@ -112,12 +159,18 @@ def experiment(*, n_periods, n_units, n_treatments,
                       'optval': est_sub.opt_policy_value_,
                       'optdelta': est_sub.opt_policy_delta_simple_,
                       'optparams': {t: est_sub.opt_param_summary(t).summary_frame() for t in range(m)}}
+    results['oracle_ols'] = {'pival': est_low.policy_value_,
+                             'pidelta': est_low.policy_delta_simple_,
+                             'params': {t: est_low.param_summary(t).summary_frame() for t in range(m)},
+                             'optval': est_low.opt_policy_value_,
+                             'optdelta': est_low.opt_policy_delta_simple_,
+                             'optparams': {t: est_low.opt_param_summary(t).summary_frame() for t in range(m)}}
     return results
 
 
 def main(*, n_periods, n_units, n_treatments,
          n_x, s_x, s_t, n_instances, n_samples,
-         hetero_strenth=.5, n_hetero_vars=0, autoreg=1.0):
+         hetero_strenth=.5, n_hetero_vars=0, autoreg=1.0, verbose=0):
 
     res = []
     for instance_seed in range(n_instances):
@@ -129,7 +182,8 @@ def main(*, n_periods, n_units, n_treatments,
                                                                       n_hetero_vars=n_hetero_vars,
                                                                       autoreg=autoreg,
                                                                       instance_seed=instance_seed,
-                                                                      sample_seed=sample_seed)
+                                                                      sample_seed=sample_seed,
+                                                                      verbose=verbose)
                                             for sample_seed in range(n_samples)))
     return res
 
