@@ -52,11 +52,11 @@ def get_model_reg(X, y, *, degrees=[1, 2], verbose=0):
                                                                    interaction_only=True)),
                                         ('sc', StandardScaler()),
                                         ('ls', Lasso())]),
-                              RandomForestRegressor(n_estimators=100, min_samples_leaf=20, max_depth=3),
-                              lgb.LGBMRegressor(num_leaves=32)],
+                              # RandomForestRegressor(n_estimators=100, min_samples_leaf=20, max_depth=3),
+                             lgb.LGBMRegressor(num_leaves=32)],
                              param_grid_list=[{'poly__degree': degrees, 'ls__alpha': np.logspace(-4, 2, 20)},
-                                              {'min_weight_fraction_leaf': [.01, .1]},
-                                              {'learning_rate': [0.1, 0.3], 'max_depth': [3, 5]}],
+                                              # {'min_weight_fraction_leaf': [.01, .1]},
+                                              {'learning_rate': [0.001, 0.1, 0.3], 'max_depth': [3, 5]}],
                              cv=3,
                              scoring='r2',
                              verbose=verbose)
@@ -645,14 +645,16 @@ class HeteroSNMMDynamicDML(SNMMDynamicDML):
 ###########################
 
 def gen_data(*, n_periods, n_units, n_treatments, n_x, s_x, s_t,
-             hetero_strenth=0, n_hetero_vars=0, autoreg=1.0,
+             hetero_strenth=0, n_hetero_vars=0, autoreg=1.0, gamma=.2,
+             sigma_x=.8, sigma_t=.3, sigma_y=.1, conf_str=2.0,
              instance_seed=None, sample_seed=None):
     hetero_inds = np.arange(n_x - n_hetero_vars, n_x) if n_hetero_vars > 0 else None
     dgp = DynamicPanelDGP(n_periods, n_treatments, n_x)
-    dgp.create_instance(s_x, hetero_strength=hetero_strenth, hetero_inds=hetero_inds,
+    dgp.create_instance(s_x, sigma_x=sigma_x, sigma_y=sigma_y,
+                        hetero_strength=hetero_strenth, hetero_inds=hetero_inds, conf_str=conf_str,
                         random_seed=instance_seed,
                         autoreg=autoreg)
-    Y, T, X, W, groups = dgp.observational_data(n_units, s_t=s_t, random_seed=sample_seed)
+    Y, T, X, W, groups = dgp.observational_data(n_units, gamma=gamma, s_t=s_t, sigma_t=sigma_t, random_seed=sample_seed)
 
     if n_hetero_vars > 0:
         true_effect_inds = []
@@ -665,27 +667,19 @@ def gen_data(*, n_periods, n_units, n_treatments, n_x, s_x, s_t,
         true_effect_params = dgp.true_effect
     true_effect_params = true_effect_params.reshape(n_periods, n_treatments, n_hetero_vars + 1)
 
-    Y = Y.reshape((-1, n_periods))
-    T = T.reshape((-1, n_periods, T.shape[1]))
     if X is not None:
-        X = X.reshape((-1, n_periods, X.shape[1]))
-    W = W.reshape((-1, n_periods, W.shape[1]))
-
-    if X is not None:
-        x0_cols = [f'x{i}' for i in range(X.shape[-1])] + [f'w{i}' for i in range(W.shape[-1])]
-        x1_cols = [f'x{i}' for i in range(X.shape[-1])] + [f'w{i}' for i in range(W.shape[-1])]
-
-        y = Y[:, -1]
-        X = {0: pd.DataFrame(np.hstack([X[:, 0, :], W[:, 0, :]]), columns=x0_cols),
-            1: pd.DataFrame(np.hstack([X[:, 1, :], W[:, 1, :]]), columns=x1_cols),
-            'het': pd.DataFrame(np.hstack([X[:, 0, :]]), columns=[f'x{i}' for i in range(X.shape[-1])])}
+        Xdict = {}
+        x_cols = [f'x{i}' for i in range(X.shape[-1])] + [f'w{i}' for i in range(W.shape[-1])]
+        for t in range(n_periods):
+            Xdict[t] = pd.DataFrame(np.hstack([X[:, t, :], W[:, t, :]]), columns=x_cols)
+        Xdict['het'] = pd.DataFrame(np.hstack([X[:, 0, :]]), columns=[f'x{i}' for i in range(X.shape[-1])])
     else:
-        x0_cols = [f'w{i}' for i in range(W.shape[-1])]
-        x1_cols = [f'w{i}' for i in range(W.shape[-1])]
-        X = {0: pd.DataFrame(W[:, 0, :], columns=x0_cols),
-             1: pd.DataFrame(W[:, 1, :], columns=x1_cols)}
-    
-    T = {0: T[:, 0, :], 1: T[:, 1, :]}
+        Xdict = {}
+        x_cols = [f'w{i}' for i in range(W.shape[-1])]
+        for t in range(n_periods):
+            Xdict[t] = pd.DataFrame(W[:, t, :], columns=x_cols)
+
+    T = {t: T[:, t, :] for t in range(n_periods)}
     y = Y[:, -1]
-    return y, X, T, true_effect_params
+    return y, Xdict, T, true_effect_params
 

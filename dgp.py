@@ -4,17 +4,8 @@ import abc
 import numpy as np
 from econml.utilities import cross_product
 from statsmodels.tools.tools import add_constant
-try:
-    import matplotlib
-    import matplotlib.pyplot as plt
-except ImportError as exn:
-    from .utilities import MissingModule
-
-    # make any access to matplotlib or plt throw an exception
-    matplotlib = plt = MissingModule("matplotlib is no longer a dependency of the main econml package; "
-                                     "install econml[plt] or econml[all] to require it, or install matplotlib "
-                                     "separately, to use the tree interpreters", exn)
-
+import matplotlib
+import matplotlib.pyplot as plt
 
 class _BaseDynamicPanelDGP:
 
@@ -153,28 +144,25 @@ class DynamicPanelDGP(_BaseDynamicPanelDGP):
         T[0] = p(0, X[0], 0, noise)
         """
         np.random.seed(random_seed)
-        Y = np.zeros(n_units * self.n_periods)
-        T = np.zeros((n_units * self.n_periods, self.n_treatments))
-        X = np.zeros((n_units * self.n_periods, self.n_x))
-        groups = np.zeros(n_units * self.n_periods)
-        for t in range(n_units * self.n_periods):
-            period = t % self.n_periods
-            if period == 0:
-                X[t] = np.random.normal(0, self.sigma_x, size=self.n_x)
-                const_x0 = X[t].copy()
-                T[t] = policy_gen(np.zeros(self.n_treatments), X[t], period)
-            else:
-                # The feature for heterogeneity stays constant
-                X[t] = (np.dot(self.x_hetero_effect, const_x0) + 1) * np.dot(self.Alpha, T[t - 1]) + \
-                    np.dot(self.Beta, X[t - 1]) + \
-                    np.random.normal(0, self.sigma_x, size=self.n_x)
-                T[t] = policy_gen(T[t - 1], X[t], period)
-            Y[t] = (np.dot(self.y_hetero_effect, const_x0) + 1) * np.dot(self.epsilon, T[t]) + \
-                np.dot(X[t], self.zeta) + \
-                np.random.normal(0, self.sigma_y)
-            groups[t] = t // self.n_periods
+        Y = np.zeros((n_units, self.n_periods))
+        T = np.zeros((n_units, self.n_periods, self.n_treatments))
+        X = np.zeros((n_units , self.n_periods, self.n_x))
+        groups = np.zeros((n_units, self.n_periods))
 
-        return Y, T, X[:, self.hetero_inds] if (self.hetero_inds is not None) else None, X[:, self.endo_inds], groups
+        X[:, 0] = np.random.normal(0, self.sigma_x, size=(n_units, self.n_x))
+        T[:, 0] = policy_gen(np.zeros((n_units, self.n_treatments)), X[:, 0], 0)
+        cate_x = 1 + X[:, 0] @ self.x_hetero_effect.reshape(-1, 1)
+        cate_y = 1 + X[:, 0] @ self.y_hetero_effect
+
+        for t in np.arange(1, self.n_periods):
+            X[:, t] = cate_x * (T[:, t - 1] @ self.Alpha.T) + X[:, t - 1] @ self.Beta.T
+            X[:, t] += np.random.normal(0, self.sigma_x, size=X[:, t].shape)
+            T[:, t] = policy_gen(T[:, t - 1], X[:, t], t)
+            Y[:, t] = cate_y * (T[:, t] @ self.epsilon) + X[:, t] @ self.zeta
+            Y[:, t] += np.random.normal(0, self.sigma_y * np.std(Y[:, t], axis=0), size=Y[:, t].shape)
+            groups[:, t] = np.arange(n_units)
+
+        return Y, T, X[:, :, self.hetero_inds] if (self.hetero_inds is not None) else None, X[:, :, self.endo_inds], groups
 
     def observational_data(self, n_units, gamma=0, s_t=1, sigma_t=1, random_seed=123):
         """Generate observational data with some observational treatment policy parameters.
@@ -190,8 +178,8 @@ class DynamicPanelDGP(_BaseDynamicPanelDGP):
         Delta[:, :s_t] = self.conf_str / s_t
 
         def policy_gen(Tpre, X, period):
-            return gamma * Tpre + (1 - gamma) * np.dot(Delta, X) + \
-                np.random.normal(0, sigma_t, size=self.n_treatments)
+            base = gamma * Tpre + (1 - gamma) * X @ Delta.T
+            return  base + np.random.normal(0, sigma_t, size=Tpre.shape)
         return self._gen_data_with_policy(n_units, policy_gen, random_seed=random_seed)
 
 
