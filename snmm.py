@@ -16,6 +16,8 @@ from sklearn.pipeline import Pipeline
 from econml.inference import NormalInferenceResults
 from dgp import DynamicPanelDGP
 from copy import deepcopy
+from scipy.special import softmax
+import warnings
 
 def get_linear_model_reg(X, y):
     est = LassoCV(cv=3).fit(X, y)
@@ -149,8 +151,13 @@ def fit_cov(Qres, psi, res, m):
     stderr_dict = {j: stderr[inds[j]:inds[j+1]] for j in range(m)}
     return cov, stderr, invJ, stderr_dict
 
-def fit_policy(y, X, T, Qres, psi, res, invJ, phi, pi, m):
-    Q = {j: phi(j, X, T, T[j]) - phi(j, X, T, pi(j, X, T)) for j in range(m)}
+def fit_policy(y, X, T, Qres, psi, res, invJ, phi, pi, m, proba=False):
+    if proba:
+        probs = {j: pi(j, X, T) for j in range(m)}
+        Q = {j: (phi(j, X, T, T[j]) - probs[j][:, [0]] * phi(j, X, T, np.zeros(T[j].shape)) 
+                 - probs[j][:, [1]] * phi(j, X, T, np.ones(T[j].shape)))  for j in range(m)}
+    else:
+        Q = {j: phi(j, X, T, T[j]) - phi(j, X, T, pi(j, X, T)) for j in range(m)}
     point = y - np.sum([np.dot(Q[j], psi[j]) for j in range(m)], axis=0)
     est = np.mean(point)
     inf = point - est
@@ -159,8 +166,13 @@ def fit_policy(y, X, T, Qres, psi, res, invJ, phi, pi, m):
     var = np.mean(inf**2)
     return est, var, np.sqrt(var / y.shape[0])
 
-def fit_policy_delta_simple(X, T, Qres, psi, res, invJ, phi, pi, pi_base, m):
-    Q = {j: phi(j, X, T, pi_base(j, X, T)) - phi(j, X, T, pi(j, X, T)) for j in range(m)}
+def fit_policy_delta_simple(X, T, Qres, psi, res, invJ, phi, pi, pi_base, m, proba=False):
+    if proba:
+        probs = {j: pi(j, X, T) for j in range(m)}
+        Q = {j: (phi(j, X, T, pi_base(j, X, T)) - probs[j][:, [0]] * phi(j, X, T, np.zeros(T[j].shape)) 
+                 - probs[j][:, [1]] * phi(j, X, T, np.ones(T[j].shape)))  for j in range(m)}
+    else:
+        Q = {j: phi(j, X, T, pi_base(j, X, T)) - phi(j, X, T, pi(j, X, T)) for j in range(m)}
     point = - np.sum([np.dot(Q[j], psi[j]) for j in range(m)], axis=0)
     est = np.mean(point)
     inf = point - est
@@ -171,9 +183,14 @@ def fit_policy_delta_simple(X, T, Qres, psi, res, invJ, phi, pi, pi_base, m):
 
 def fit_policy_delta(X, T, phi,
                      Qres, psi, res, invJ, pi, 
-                     Qres_base, psi_base, res_base, invJ_base, pi_base, m):
+                     Qres_base, psi_base, res_base, invJ_base, pi_base, m, proba=False):
     Q_base = {j: phi(j, X, T, pi_base(j, X, T)) for j in range(m)}
-    Q_target = {j: phi(j, X, T, pi(j, X, T)) for j in range(m)}
+    if proba:
+        probs = {j: pi(j, X, T) for j in range(m)}
+        Q_target = {j: (probs[j][:, [0]] * phi(j, X, T, np.zeros(T[j].shape)) 
+                        + probs[j][:, [1]] * phi(j, X, T, np.ones(T[j].shape))) for j in range(m)}
+    else:
+        Q_target = {j: phi(j, X, T, pi(j, X, T)) for j in range(m)}
     point = np.sum([np.dot(Q_target[j], psi[j]) for j in range(m)], axis=0)
     point -= np.sum([np.dot(Q_base[j], psi_base[j]) for j in range(m)], axis=0)
     est = np.mean(point)
@@ -190,29 +207,6 @@ def fit_policy_delta(X, T, phi,
 # Linear SNMMs with Heterogeneous Parameters
 ##############################################
 
-class LinearModelFinal:
-
-    def __init__(self, linear_model, phi):
-        self.linear_model = clone(linear_model)
-        self.phi = phi
-
-    def fit(self, X, T, y):
-        y, T, X, _ = check_inputs(y, T, X, W=None, multi_output_T=True, multi_output_Y=True)
-        self.d_t = T.shape[1]
-        X = np.hstack([np.ones((X.shape[0], 1)), self.phi(X)])
-        self.linear_model.fit(cross_product(T, X), y)
-        return self
-
-    def predict(self, X):
-        X = check_array(X, accept_sparse=False, ensure_min_features=0)
-        X = np.hstack([np.ones((X.shape[0], 1)), self.phi(X)])
-        output = np.zeros((X.shape[0], self.d_t))
-        for i in range(self.d_t):
-            indicator = np.zeros((X.shape[0], self.d_t))
-            indicator[:, i] = 1
-            output[:, i] = self.linear_model.predict(cross_product(indicator, X))
-        return output
-
 
 def fit_heterogeneous_final(yres, Qres, X, m, get_model_final=lambda: CausalForest()):
     psi = {}
@@ -221,38 +215,44 @@ def fit_heterogeneous_final(yres, Qres, X, m, get_model_final=lambda: CausalFore
     models = {}
     for t in np.arange(0, m)[::-1]:
         Yadj[t] = yres[t].copy()
-        Yadj[t] -= np.sum([np.sum(Qres[t][j] * models[j].predict(X['het']), axis=1)
+        Yadj[t] -= np.sum([np.sum(Qres[t][j] * models[j].predict(X['het'].values), axis=1)
                            for j in np.arange(t + 1, m)], axis=0)
-        models[t] = get_model_final().fit(X['het'], Qres[t][t], Yadj[t])
-        res[t] = Yadj[t] - np.sum(Qres[t][t] * models[t].predict(X['het']), axis=1)
+        models[t] = get_model_final().fit(X['het'].values, Qres[t][t], Yadj[t])
+        res[t] = Yadj[t] - np.sum(Qres[t][t] * models[t].predict(X['het'].values), axis=1)
     return Yadj, models, res
 
 def fit_policy_heterogeneous(y, X, T, models, phi, pi, m):
     Q = {j: phi(j, X, T, T[j]) - phi(j, X, T, pi(j, X, T)) for j in range(m)}
-    point = y - np.sum([np.sum(Q[j] * models[j].predict(X['het']), axis=1) for j in range(m)], axis=0)
+    point = y - np.sum([np.sum(Q[j] * models[j].predict(X['het'].values), axis=1) for j in range(m)], axis=0)
     est = np.mean(point)
     inf = point - est
     var = np.mean(inf**2) / X[0].shape[0]
     if hasattr(models[0], 'predict_projection_var'):
-        meanQ = {j: np.mean(Q[j], axis=0).reshape(1, -1) for j in range(m)}
-        var += np.sum([np.mean(models[j].predict_projection_var(X['het'],
-                                                                projector=np.tile(meanQ[j], (X['het'].shape[0], 1))),
-                            axis=0)
-                    for j in range(m)])
+        try:
+            meanQ = {j: np.mean(Q[j], axis=0).reshape(1, -1) for j in range(m)}
+            var += np.sum([np.mean(models[j].predict_projection_var(X['het'].values,
+                                                                    projector=np.tile(meanQ[j], (X['het'].shape[0], 1))),
+                                axis=0)
+                        for j in range(m)])
+        except:
+            warnings.warn("Could not calculate extra variance")
     return est, var, np.sqrt(var)
 
 def fit_policy_delta_simple_heterogeneous(X, T, models, phi, pi, pi_base, m):
     Q = {j: phi(j, X, T, pi_base(j, X, T)) - phi(j, X, T, pi(j, X, T)) for j in range(m)}
-    point = - np.sum([np.sum(Q[j] * models[j].predict(X['het']), axis=1) for j in range(m)], axis=0)
+    point = - np.sum([np.sum(Q[j] * models[j].predict(X['het'].values), axis=1) for j in range(m)], axis=0)
     est = np.mean(point)
     inf = point - est
     var = np.mean(inf**2) / X[0].shape[0]
     if hasattr(models[0], 'predict_projection_var'):
-        meanQ = {j: np.mean(Q[j], axis=0).reshape(1, -1) for j in range(m)}
-        var += np.sum([np.mean(models[j].predict_projection_var(X['het'],
-                                                                projector=np.tile(meanQ[j], (X['het'].shape[0], 1))),
-                            axis=0)
-                    for j in range(m)])
+        try:
+            meanQ = {j: np.mean(Q[j], axis=0).reshape(1, -1) for j in range(m)}
+            var += np.sum([np.mean(models[j].predict_projection_var(X['het'].values,
+                                                                    projector=np.tile(meanQ[j], (X['het'].values.shape[0], 1))),
+                                axis=0)
+                        for j in range(m)])
+        except:
+            warnings.warn("Could not calculate extra variance")
     return est, var, np.sqrt(var)
 
 
@@ -261,23 +261,30 @@ def fit_policy_delta_heterogeneous(X, T, phi,
                                    models_base, pi_base, m):
     Q_base = {j: phi(j, X, T, pi_base(j, X, T)) for j in range(m)}
     Q_target = {j: phi(j, X, T, pi(j, X, T)) for j in range(m)}
-    point = np.sum([np.sum(Q_target[j] * models[j].predict(X['het']), axis=1) for j in range(m)], axis=0)
-    point -= np.sum([np.sum(Q_base[j] * models_base[j].predict(X['het']), axis=1) for j in range(m)], axis=0)
+    point = np.sum([np.sum(Q_target[j] * models[j].predict(X['het'].values), axis=1) for j in range(m)], axis=0)
+    point -= np.sum([np.sum(Q_base[j] * models_base[j].predict(X['het'].values), axis=1) for j in range(m)], axis=0)
     est = np.mean(point)
     inf = point - est
     var = np.mean(inf**2) / X[0].shape[0]
     if hasattr(models[0], 'predict_projection_var'):
-        meanQ = {j: np.mean(Q_target[j], axis=0).reshape(1, -1) for j in range(m)}
-        var += np.sum([np.mean(models[j].predict_projection_var(X['het'],
-                                                                projector=np.tile(meanQ[j], (X['het'].shape[0], 1))),
-                            axis=0)
-                    for j in range(m)])
+        try:
+            meanQ = {j: np.mean(Q_target[j], axis=0).reshape(1, -1) for j in range(m)}
+            var += np.sum([np.mean(models[j].predict_projection_var(X['het'].values,
+                                                                    projector=np.tile(meanQ[j], (X['het'].shape[0], 1))),
+                                axis=0)
+                        for j in range(m)])
+        except:
+            warnings.warn("Could not calculate extra variance")
+
     if hasattr(models_base[0], 'predict_projection_var'):
-        meanQ = {j: np.mean(Q_base[j], axis=0).reshape(1, -1) for j in range(m)}
-        var += np.sum([np.mean(models_base[j].predict_projection_var(X['het'],
-                                                                projector=np.tile(meanQ[j], (X['het'].shape[0], 1))),
-                            axis=0)
-                    for j in range(m)])
+        try:
+            meanQ = {j: np.mean(Q_base[j], axis=0).reshape(1, -1) for j in range(m)}
+            var += np.sum([np.mean(models_base[j].predict_projection_var(X['het'],
+                                                                    projector=np.tile(meanQ[j], (X['het'].shape[0], 1))),
+                                axis=0)
+                        for j in range(m)])
+        except:
+            warnings.warn("Could not calculate extra variance")
     return est, var, np.sqrt(var)
 
 
@@ -285,14 +292,18 @@ def fit_policy_delta_heterogeneous(X, T, phi,
 # Linear SNMMs: Optimal Dynamic Regime
 ##############################################
 
-def pi_opt(j, X, T, phi, psi):
+def pi_opt(j, X, T, phi, psi, beta=None):
     out0 = np.dot(phi(j, X, T, np.zeros(T[j].shape)), psi[j])
     out1 = np.dot(phi(j, X, T, np.ones(T[j].shape)), psi[j])
-    return np.argmax(np.hstack([out0.reshape(-1, 1), out1.reshape(-1, 1)]), axis=1).reshape(T[j].shape)
+    if beta is None:
+        p = np.argmax(np.hstack([out0.reshape(-1, 1), out1.reshape(-1, 1)]), axis=1).reshape(-1, 1)
+        return np.hstack([1 - p, p])
+    return softmax(beta * np.hstack([out0.reshape(-1, 1), out1.reshape(-1, 1)]), axis=1)
 
 def fit_opt(y, X, T, m, phi,
             get_model_reg, get_multimodel_reg, multitask=True,
             get_model_final=lambda: LinearRegression(),
+            beta=None,
             verbose=1):
     yres = {}
     Qres = {}
@@ -313,7 +324,11 @@ def fit_opt(y, X, T, m, phi,
         for j in np.arange(t, m):
             if verbose > 0:
                 print(f'Treatment: {j}')
-            Qjt = phi(j, X, T, T[j]) - (phi(j, X, T, pi_opt(j, X, T, phi, psi)) if j > t else 0)
+            Qjt = phi(j, X, T, T[j])
+            if j > t:
+                probs = pi_opt(j, X, T, phi, psi, beta=beta)
+                Qjt -= probs[:, [0]] * phi(j, X, T, np.zeros(T[j].shape))
+                Qjt -= probs[:, [1]] * phi(j, X, T, np.ones(T[j].shape))
             if multitask:
                 multimodel_reg = get_multimodel_reg(It, Qjt)
                 if verbose > 1:
@@ -342,15 +357,19 @@ def fit_opt(y, X, T, m, phi,
 # Linear SNMMs: Optimal Dynamic Regime with Heterogeneous Parameters
 ######################################################################
 
-def pi_opt_heterogeneous(j, X, T, phi, models):
+def pi_opt_heterogeneous(j, X, T, phi, models, beta=None):
     psi_het = models[j].predict(X['het'])
     out0 = np.sum(phi(j, X, T, np.zeros(T[j].shape)) * psi_het, axis=1)
     out1 = np.sum(phi(j, X, T, np.ones(T[j].shape)) * psi_het, axis=1)
-    return np.argmax(np.hstack([out0.reshape(-1, 1), out1.reshape(-1, 1)]), axis=1).reshape(T[j].shape)
+    if beta is None:
+        p = np.argmax(np.hstack([out0.reshape(-1, 1), out1.reshape(-1, 1)]), axis=1).reshape(-1, 1)
+        return np.hstack([1 - p, p])
+    return softmax(beta * np.hstack([out0.reshape(-1, 1), out1.reshape(-1, 1)]), axis=1)
 
 def fit_opt_heterogeneous(y, X, T, m, phi,
                           get_model_reg, get_multimodel_reg, multitask=True,
                           get_model_final=lambda: CausalForest(),
+                          beta=None,
                           verbose=1):
     yres = {}
     Qres = {}
@@ -370,7 +389,10 @@ def fit_opt_heterogeneous(y, X, T, m, phi,
             if verbose > 0:
                 print(f'Treatment: {j}')
             Qjt = phi(j, X, T, T[j]) 
-            Qjt -= (phi(j, X, T, pi_opt_heterogeneous(j, X, T, phi, models)) if j > t else 0)
+            if j > t:
+                probs = pi_opt_heterogeneous(j, X, T, phi, models, beta=beta)
+                Qjt -= probs[:, [0]] * phi(j, X, T, np.zeros(T[j].shape))
+                Qjt -= probs[:, [1]] * phi(j, X, T, np.ones(T[j].shape))
             if multitask:
                 multimodel_reg = get_multimodel_reg(It, Qjt)
                 if verbose > 1:
@@ -476,15 +498,17 @@ class SNMMDynamicDML:
         return piest, pistderr
 
     def pi_star(self, j, X, T):
-        return pi_opt(j, X, T, self.phi, self.psi_opt_)
+        return pi_opt(j, X, T, self.phi, self.psi_opt_, self.beta_)
 
-    def fit_opt(self, X, T, y):
+    def fit_opt(self, X, T, y, beta=None):
+        self.beta_ = beta
         self.opt_X_ = deepcopy(X)
         self.opt_T_ = deepcopy(T)
         self.opt_y_ = deepcopy(y)
         _, psi_opt, res_opt, _, Qres_opt = fit_opt(y, X, T, self.m, self.phi,
                                            self.model_reg_fn, self.multimodel_reg_fn, multitask=self.multitask,
                                            get_model_final=self.model_final_fn,
+                                           beta=self.beta_,
                                            verbose=self.verbose)
         cov_opt, _, invJ_opt, stderr_dict_opt = fit_cov(Qres_opt, psi_opt, res_opt, self.m)
         self.psi_opt_, self.res_opt_, self.Qres_opt_ = psi_opt, res_opt, Qres_opt
@@ -492,11 +516,11 @@ class SNMMDynamicDML:
 
         self.opt_piest_, _, self.opt_pistderr_ = fit_policy(y, X, T,
                                                             Qres_opt, psi_opt, res_opt, invJ_opt,
-                                                            self.phi, self.pi_star, self.m)
+                                                            self.phi, self.pi_star, self.m, proba=True)
         self.delta_opt_piest_, _, self.delta_opt_pistderr_ = fit_policy_delta_simple(X, T,
                                                                                      Qres_opt, psi_opt, res_opt, invJ_opt,
                                                                                      self.phi, self.pi_star, pi_base,
-                                                                                     self.m)
+                                                                                     self.m, proba=True)
         return self
     
     def opt_param_summary(self, t, *, coef_thr=-np.inf):
@@ -520,7 +544,7 @@ class SNMMDynamicDML:
         piest, _, pistderr = fit_policy_delta(self.opt_X_, self.opt_T_, self.phi,
                                               self.Qres_opt_, self.psi_opt_, self.res_opt_, self.invJ_opt_, self.pi_star, 
                                               self.est_base_.Qres_, self.est_base_.psi_, self.est_base_.res_,
-                                              self.est_base_.invJ_, self.est_base_.pi_, self.m)
+                                              self.est_base_.invJ_, self.est_base_.pi_, self.m, proba=True)
         return piest, pistderr
 
 
@@ -536,6 +560,12 @@ class HeteroSNMMDynamicDML(SNMMDynamicDML):
                                                                                            self.models_, self.phi,
                                                                                            self.pi_, pi_base, self.m)
         return self
+
+    def dynamic_effects(self, Xhet):
+        out = {}
+        for t in range(self.m):
+            out[t] = self.models_[t].predict(Xhet)
+        return out
 
     def param_summary(self, t, *, coef_thr=-np.inf):
         if not hasattr(self.models_[0], 'linear_model'):
@@ -646,12 +676,13 @@ class HeteroSNMMDynamicDML(SNMMDynamicDML):
 
 def gen_data(*, n_periods, n_units, n_treatments, n_x, s_x, s_t,
              hetero_strenth=0, n_hetero_vars=0, autoreg=1.0, gamma=.2,
-             sigma_x=.8, sigma_t=.3, sigma_y=.1, conf_str=2.0,
+             sigma_x=.8, sigma_t=.3, sigma_y=.1, conf_str=2.0, nonlin_fn=lambda x:x,
              instance_seed=None, sample_seed=None):
     hetero_inds = np.arange(n_x - n_hetero_vars, n_x) if n_hetero_vars > 0 else None
     dgp = DynamicPanelDGP(n_periods, n_treatments, n_x)
     dgp.create_instance(s_x, sigma_x=sigma_x, sigma_y=sigma_y,
                         hetero_strength=hetero_strenth, hetero_inds=hetero_inds, conf_str=conf_str,
+                        nonlin_fn=nonlin_fn,
                         random_seed=instance_seed,
                         autoreg=autoreg)
     Y, T, X, W, groups = dgp.observational_data(n_units, gamma=gamma, s_t=s_t, sigma_t=sigma_t, random_seed=sample_seed)
@@ -681,5 +712,5 @@ def gen_data(*, n_periods, n_units, n_treatments, n_x, s_x, s_t,
 
     T = {t: T[:, t, :] for t in range(n_periods)}
     y = Y[:, -1]
-    return y, Xdict, T, true_effect_params
+    return y, Xdict, T, true_effect_params, dgp
 

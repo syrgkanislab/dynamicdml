@@ -1,0 +1,52 @@
+description: Simple PyTorch job on MNIST on AMLK8s
+
+target:
+  service: amlk8s
+  # run "amlt target list amlk8s" to list the names of available AMLK8s targets
+  name: itpeusp100cl
+  vc: resrchvc
+
+environment:
+  image: pytorch/pytorch:1.4-cuda10.1-cudnn7-devel
+  registry: docker.io # any public registry can be specified here
+  setup:
+    - pip install pandas --user
+    - pip install matplotlib --user
+    - pip install "numpy<1.21" --user
+    - pip install "numba<0.54" --user
+    - pip install econml --user
+
+code:
+  # local directory of the code. this will be uploaded to the server.
+  # $CONFIG_DIR is expanded to the directory of this config file
+  local_dir: $CONFIG_DIR/src3
+
+# data:
+#   data upload is not required for this example
+
+# list of jobs to run, we run 2 jobs in this example
+search:
+  job_template:
+    name: dyndml_{n_x}_{n_hetero_vars}_{n_units}_{inst_start_seed}_{sample_start_seed}
+    sku: C12
+    command:
+    - python experiment.py --max_poly_degree 2 --high_dim 1 --n_x {n_x} --n_hetero_vars {n_hetero_vars} --n_units {n_units} --n_instances 1 --inst_start_seed {inst_start_seed} --n_samples 20 --sample_start_seed {sample_start_seed}
+  type: grid
+  max_trials: 200
+  parallel_trials: 200
+  params:
+      - name: n_x
+        spec: discrete
+        values: [20, 50]
+      - name: n_hetero_vars
+        spec: discrete
+        values: [2]
+      - name: n_units
+        spec: discrete
+        values: [1000, 5000]
+      - name: inst_start_seed
+        spec: discrete
+        values: "[i for i in range(10)]"
+      - name: sample_start_seed
+        spec: discrete
+        values: "np.arange(0, 100, 20)"

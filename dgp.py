@@ -64,12 +64,13 @@ class DynamicPanelDGP(_BaseDynamicPanelDGP):
         super().__init__(n_periods, n_treatments, n_x)
 
     def create_instance(self, s_x, sigma_x=.8, sigma_y=.1, conf_str=5, hetero_strength=.5, hetero_inds=None,
-                        autoreg=.25, state_effect=.25, random_seed=123):
+                        autoreg=.25, state_effect=.25, nonlin_fn=lambda x:x, random_seed=123):
         np.random.seed(random_seed)
         self.s_x = s_x
         self.conf_str = conf_str
         self.sigma_x = sigma_x
         self.sigma_y = sigma_y
+        self.nonlin_fn = nonlin_fn
         self.hetero_inds = hetero_inds.astype(
             int) if hetero_inds is not None else hetero_inds
         self.endo_inds = np.setdiff1d(
@@ -125,13 +126,14 @@ class DynamicPanelDGP(_BaseDynamicPanelDGP):
                     self.Beta, (self.n_periods - 1 - t) - 1) @ self.Alpha)
         return self
 
-    def hetero_effect_fn(self, t, x):
+    def hetero_effect_fn(self, t, X):
         if t == self.n_periods - 1:
-            return (np.dot(self.y_hetero_effect, x.flatten()) + 1) * self.epsilon
+            cate_y = 1 + self.nonlin_fn(X @ self.y_hetero_effect[-len(self.hetero_inds):])
+            return cate_y.reshape(-1, 1) @ self.epsilon.reshape(1, -1)
         else:
-            return (np.dot(self.x_hetero_effect, x.flatten()) + 1) *\
-                (self.zeta.reshape(1, -1) @ np.linalg.matrix_power(self.Beta, (self.n_periods - 1 - t) - 1)
-                    @ self.Alpha).flatten()
+            cate_x = 1 + self.nonlin_fn(X @ self.x_hetero_effect[-len(self.hetero_inds):])
+            eff = self.zeta.reshape(1, -1) @ np.linalg.matrix_power(self.Beta, (self.n_periods - 1 - t) - 1) @ self.Alpha
+            return cate_x.reshape(-1, 1) @ eff.reshape(1, -1)
 
     def _gen_data_with_policy(self, n_units, policy_gen, random_seed=123):
         """
@@ -151,8 +153,8 @@ class DynamicPanelDGP(_BaseDynamicPanelDGP):
 
         X[:, 0] = np.random.normal(0, self.sigma_x, size=(n_units, self.n_x))
         T[:, 0] = policy_gen(np.zeros((n_units, self.n_treatments)), X[:, 0], 0)
-        cate_x = 1 + X[:, 0] @ self.x_hetero_effect.reshape(-1, 1)
-        cate_y = 1 + X[:, 0] @ self.y_hetero_effect
+        cate_x = 1 + self.nonlin_fn(X[:, 0] @ self.x_hetero_effect.reshape(-1, 1))
+        cate_y = 1 + self.nonlin_fn(X[:, 0] @ self.y_hetero_effect)
 
         for t in np.arange(1, self.n_periods):
             X[:, t] = cate_x * (T[:, t - 1] @ self.Alpha.T) + X[:, t - 1] @ self.Beta.T
