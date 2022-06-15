@@ -9,6 +9,11 @@ from econml.utilities import cross_product
 
 class BlipSpec:
 
+    def __init__(self, *, heterogeneity=True, lags=True, lag_heterogeneity=True):
+        self.heterogeneity = heterogeneity
+        self.lags = lags
+        self.lag_heterogeneity = lag_heterogeneity
+
     def fit(self, X, T):
         self.n_treatments = {}
         for t, treatvec in T.items():
@@ -19,33 +24,40 @@ class BlipSpec:
         return self
 
     def phi(self, t, X, T, Tt):
+        out = Tt
         if t >= 1:
-            return np.hstack([Tt,
-                            cross_product(Tt, T[t-1]),
-                            cross_product(Tt, X[t].values),
-                            cross_product(Tt, X[0].values),
-                            cross_product(Tt, T[t-1], X[t].values),
-                            cross_product(Tt, T[t-1], X[0].values)
-                            ])
+            if self.lags:
+                out = np.hstack([out, cross_product(Tt, T[t-1])])
+            if self.heterogeneity:
+                out = np.hstack([out,
+                                 cross_product(Tt, X[t].values),
+                                 cross_product(Tt, X[0].values)])
+            if self.lag_heterogeneity:
+                out = np.hstack([out,
+                                 cross_product(Tt, T[t-1], X[t].values),
+                                 cross_product(Tt, T[t-1], X[0].values)])
         elif t==0:
-            return np.hstack([Tt, cross_product(Tt, X[t].values)])
-        raise AttributeError("Not valid")
+            if self.heterogeneity:
+                out = np.hstack([out, cross_product(Tt, X[t].values)])
+        return out
 
     def phi_names(self, t):
+        out = [f't[{x}]' for x in range(self.n_treatments[t])]
         if t >= 1:
-            return ([f't[{x}]' for x in range(self.n_treatments[t])] +
-                    [f't[{x}]*lagt[{y}]' for y in range(self.n_treatments[t-1]) for x in range(self.n_treatments[t])] +
-                    [f't[{x}]*x[{y}]' for y in list(self.Xcols[t]) for x in range(self.n_treatments[t])] + 
-                    [f't[{x}]*x0[{y}]' for y in list(self.Xcols[0]) for x in range(self.n_treatments[t])] +
-                    [f't[{x}]*lagt[{y}]*x[{z}]' for z in list(self.Xcols[t]) for y in range(self.n_treatments[t-1])
-                                            for x in range(self.n_treatments[t])] + 
-                    [f't[{x}]*lagt[{y}]*x0[{z}]' for z in list(self.Xcols[0]) for y in range(self.n_treatments[t])
-                                            for x in range(self.n_treatments[t])]
-                )
+            if self.lags:
+                out += [f't[{x}]*lagt[{y}]' for y in range(self.n_treatments[t-1]) for x in range(self.n_treatments[t])]
+            if self.heterogeneity:
+                out += [f't[{x}]*x[{y}]' for y in list(self.Xcols[t]) for x in range(self.n_treatments[t])] 
+                out += [f't[{x}]*x0[{y}]' for y in list(self.Xcols[0]) for x in range(self.n_treatments[t])]
+            if self.lag_heterogeneity:
+                out += [f't[{x}]*lagt[{y}]*x[{z}]' for z in list(self.Xcols[t]) for y in range(self.n_treatments[t-1])
+                                                   for x in range(self.n_treatments[t])]
+                out += [f't[{x}]*lagt[{y}]*x0[{z}]' for z in list(self.Xcols[0]) for y in range(self.n_treatments[t])
+                                                    for x in range(self.n_treatments[t])]
         elif t == 0:
-            return ([f't[{x}]' for x in range(self.n_treatments[t])] + 
-                    [f't[{x}]*x0[{y}]' for y in list(self.Xcols[t]) for x in range(self.n_treatments[t])])
-        raise AttributeError("Not valid")
+            if self.heterogeneity:
+                out += [f't[{x}]*x0[{y}]' for y in list(self.Xcols[t]) for x in range(self.n_treatments[t])]
+        return out
 
 class SimpleHeteroBlipSpec(BlipSpec):
 

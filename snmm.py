@@ -54,10 +54,10 @@ def get_model_reg(X, y, *, degrees=[1, 2], verbose=0):
                                                                    interaction_only=True)),
                                         ('sc', StandardScaler()),
                                         ('ls', Lasso())]),
-                              # RandomForestRegressor(n_estimators=100, min_samples_leaf=20, max_depth=3),
+                             RandomForestRegressor(n_estimators=100, min_samples_leaf=20, max_depth=3),
                              lgb.LGBMRegressor(num_leaves=32)],
                              param_grid_list=[{'poly__degree': degrees, 'ls__alpha': np.logspace(-4, 2, 20)},
-                                              # {'min_weight_fraction_leaf': [.01, .1]},
+                                              {'min_weight_fraction_leaf': [.01, .1]},
                                               {'learning_rate': [0.001, 0.1, 0.3], 'max_depth': [3, 5]}],
                              cv=3,
                              scoring='r2',
@@ -571,7 +571,10 @@ class HeteroSNMMDynamicDML(SNMMDynamicDML):
         if not hasattr(self.models_[0], 'linear_model'):
             raise AttributeError("Method available only when final model is `LinearModelFinal`")
         
-        xnames = ['1'] + list(self.X_['het'].columns)
+        if self.models_[0].fit_cate_intercept:
+            xnames = ['1'] + list(self.X_['het'].columns)
+        else:
+            xnames = list(self.X_['het'].columns)
         feat_names = np.array([f'{x}*{y}' for y in xnames for x in self.phi_names_fn(t)])
         stderr = np.zeros(self.models_[t].linear_model.coef_.shape)
         if hasattr(self.models_[t].linear_model, 'coef_stderr_'):
@@ -602,6 +605,12 @@ class HeteroSNMMDynamicDML(SNMMDynamicDML):
                                         model_final_fn=self.model_final_fn)
         self.est_base_.fit(self.X_, self.T_, self.y_, pi_base)
         return self
+
+    def base_dynamic_effects(self, Xhet):
+        out = {}
+        for t in range(self.m):
+            out[t] = self.est_base_.models_[t].predict(Xhet)
+        return out
 
     def policy_delta_complex(self):
         if not hasattr(self, 'est_base_'):

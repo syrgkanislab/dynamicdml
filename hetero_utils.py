@@ -9,20 +9,27 @@ from scipy.special import softmax
 
 class LinearModelFinal:
 
-    def __init__(self, linear_model, phi):
+    def __init__(self, linear_model, phi, fit_cate_intercept=True):
         self.linear_model = clone(linear_model)
         self.phi = phi
+        self.fit_cate_intercept = fit_cate_intercept
 
     def fit(self, X, T, y):
         y, T, X, _ = check_inputs(y, T, X, W=None, multi_output_T=True, multi_output_Y=True)
         self.d_t = T.shape[1]
-        X = np.hstack([np.ones((X.shape[0], 1)), self.phi(X)])
+        if self.fit_cate_intercept:
+            X = np.hstack([np.ones((X.shape[0], 1)), self.phi(X)])
+        else:
+            X = self.phi(X)
         self.linear_model.fit(cross_product(T, X), y)
         return self
 
     def predict(self, X):
         X = check_array(X, accept_sparse=False, ensure_min_features=0)
-        X = np.hstack([np.ones((X.shape[0], 1)), self.phi(X)])
+        if self.fit_cate_intercept:
+            X = np.hstack([np.ones((X.shape[0], 1)), self.phi(X)])
+        else:
+            X = self.phi(X)
         output = np.zeros((X.shape[0], self.d_t))
         for i in range(self.d_t):
             indicator = np.zeros((X.shape[0], self.d_t))
@@ -30,6 +37,10 @@ class LinearModelFinal:
             output[:, i] = self.linear_model.predict(cross_product(indicator, X))
         return output
     
+    @property
+    def coef_(self,):
+        return self.linear_model.coef_
+
     def __repr__(self):
         return self.linear_model.__repr__()
 
